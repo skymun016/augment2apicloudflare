@@ -1,0 +1,41 @@
+# Wrangler 配置文件
+name = "augment2api-proxy"
+main = "src/worker.js"
+compatibility_date = "2024-01-01"
+
+# 环境变量
+[vars]
+UNIFIED_TOKEN = "your-unified-token-here"
+ACCESS_PWD = "admin-password-123"
+
+# D1 数据库绑定
+[[d1_databases]]
+binding = "DB"
+database_name = "augment2api-db"
+database_id = "your-database-id"
+
+# 生产环境配置
+[env.production]
+name = "augment2api-proxy-prod"
+
+[env.production.vars]
+UNIFIED_TOKEN = "your-production-unified-token"
+ACCESS_PWD = "your-production-admin-password"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "augment2api-db-prod"
+database_id = "your-production-database-id"
+
+# 测试环境配置
+[env.staging]
+name = "augment2api-proxy-staging"
+
+[env.staging.vars]
+UNIFIED_TOKEN = "your-staging-unified-token"
+ACCESS_PWD = "your-staging-admin-password"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "augment2api-db-staging"
+database_id = "your-staging-database-id"
