@@ -44,6 +44,14 @@ export default {
         return handleModels(request, env);
       } else if (path === '/v1/chat/completions' || path === '/chat-stream') {
         return handleChatCompletion(request, env);
+      } else if (path.startsWith('/auth/') || path.startsWith('/api/auth/')) {
+        return handleAugmentAuth(request, env);
+      } else if (path === '/api/user' || path === '/user') {
+        return handleUserInfo(request, env);
+      } else if (path === '/api/validate' || path === '/validate') {
+        return handleTokenValidation(request, env);
+      } else if (path === '/api/usage' || path === '/usage') {
+        return handleUsageInfo(request, env);
       } else if (path.startsWith('/api/')) {
         return handleAPI(request, env);
       } else {
@@ -337,10 +345,154 @@ function handleModels(request, env) {
   });
 }
 
+// VSCode 插件用户信息接口
+async function handleUserInfo(request, env) {
+  // 验证统一token
+  if (!verifyUnifiedToken(request, env)) {
+    return jsonResponse({ error: 'Invalid authorization token' }, 401);
+  }
+
+  // 返回模拟的用户信息，VSCode 插件需要这些信息
+  return jsonResponse({
+    id: 'proxy-user',
+    email: 'proxy@augment2api.com',
+    name: 'Augment2API Proxy User',
+    tenant: {
+      id: 'proxy-tenant',
+      name: 'Augment2API Proxy',
+      url: 'https://augment.amexiaowu.workers.dev'
+    },
+    subscription: {
+      plan: 'pro',
+      status: 'active'
+    }
+  });
+}
+
+// VSCode 插件 Token 验证接口
+async function handleTokenValidation(request, env) {
+  // 验证统一token
+  if (!verifyUnifiedToken(request, env)) {
+    return jsonResponse({
+      valid: false,
+      error: 'Invalid authorization token'
+    }, 401);
+  }
+
+  // 检查是否有可用的真实 token
+  try {
+    const availableToken = await getAvailableToken(env);
+    if (!availableToken) {
+      return jsonResponse({
+        valid: false,
+        error: 'No available backend tokens'
+      });
+    }
+
+    return jsonResponse({
+      valid: true,
+      user: {
+        id: 'proxy-user',
+        email: 'proxy@augment2api.com',
+        name: 'Augment2API Proxy User'
+      },
+      tenant: {
+        id: 'proxy-tenant',
+        name: 'Augment2API Proxy',
+        url: 'https://augment.amexiaowu.workers.dev'
+      }
+    });
+  } catch (error) {
+    return jsonResponse({
+      valid: false,
+      error: 'Token validation failed'
+    });
+  }
+}
+
+// VSCode 插件使用情况接口
+async function handleUsageInfo(request, env) {
+  // 验证统一token
+  if (!verifyUnifiedToken(request, env)) {
+    return jsonResponse({ error: 'Invalid authorization token' }, 401);
+  }
+
+  // 返回模拟的使用情况信息
+  return jsonResponse({
+    usage: {
+      requests_today: 0,
+      requests_this_month: 0,
+      tokens_used_today: 0,
+      tokens_used_this_month: 0
+    },
+    limits: {
+      requests_per_day: 10000,
+      requests_per_month: 300000,
+      tokens_per_day: 1000000,
+      tokens_per_month: 30000000
+    },
+    subscription: {
+      plan: 'pro',
+      status: 'active',
+      expires_at: null
+    }
+  });
+}
+
+// Augment 认证代理处理
+async function handleAugmentAuth(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  // 构建目标 URL
+  const config = getConfig(env);
+  const targetUrl = config.AUGMENT_AUTH_URL + path.replace(/^\/auth/, '').replace(/^\/api\/auth/, '');
+
+  console.log('Proxying auth request to:', targetUrl);
+
+  try {
+    // 复制请求头，但排除一些不需要的
+    const headers = new Headers();
+    for (const [key, value] of request.headers.entries()) {
+      if (!['host', 'cf-ray', 'cf-connecting-ip'].includes(key.toLowerCase())) {
+        headers.set(key, value);
+      }
+    }
+
+    // 代理请求到 Augment 认证服务
+    const response = await fetch(targetUrl + url.search, {
+      method: request.method,
+      headers: headers,
+      body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.arrayBuffer() : undefined
+    });
+
+    // 复制响应头
+    const responseHeaders = new Headers();
+    for (const [key, value] of response.headers.entries()) {
+      responseHeaders.set(key, value);
+    }
+
+    // 添加 CORS 头
+    responseHeaders.set('Access-Control-Allow-Origin', '*');
+    responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders
+    });
+
+  } catch (error) {
+    console.error('Auth proxy error:', error);
+    return jsonResponse({ error: 'Auth proxy failed', message: error.message }, 500);
+  }
+}
+
 // 聊天完成处理
 async function handleChatCompletion(request, env) {
   // 验证统一token
-  if (!verifyUnifiedToken(request)) {
+  if (!verifyUnifiedToken(request, env)) {
     return jsonResponse({ error: 'Invalid authorization token' }, 401);
   }
 
