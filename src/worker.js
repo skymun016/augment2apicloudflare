@@ -60,6 +60,10 @@ export default {
         return handleTenantInfo(request, env);
       } else if (path === '/api/health' || path === '/health') {
         return handleHealthCheck(request, env);
+      } else if (path === '/api/vscode/login' || path === '/vscode/login') {
+        return handleVSCodeLogin(request, env);
+      } else if (path === '/api/vscode/auth' || path === '/vscode/auth') {
+        return handleVSCodeAuth(request, env);
       } else if (path.startsWith('/api/')) {
         return handleAPI(request, env);
       } else {
@@ -360,6 +364,15 @@ async function handleUserInfo(request, env) {
     return jsonResponse({ error: 'Invalid authorization token' }, 401);
   }
 
+  // 检查后端 token 可用性
+  let backendAvailable = false;
+  try {
+    const availableToken = await getAvailableToken(env);
+    backendAvailable = !!availableToken;
+  } catch (error) {
+    console.log('Backend token check failed:', error);
+  }
+
   // 返回模拟的用户信息，VSCode 插件需要这些信息
   return jsonResponse({
     id: 'proxy-user',
@@ -373,7 +386,8 @@ async function handleUserInfo(request, env) {
     subscription: {
       plan: 'pro',
       status: 'active'
-    }
+    },
+    backend_status: backendAvailable ? 'available' : 'unavailable'
   });
 }
 
@@ -491,6 +505,119 @@ async function handleHealthCheck(request, env) {
       database: 'error',
       error: error.message
     }, 500);
+  }
+}
+
+// VSCode 插件专用登录接口
+async function handleVSCodeLogin(request, env) {
+  if (request.method === 'POST') {
+    try {
+      const { tenant_url, token } = await request.json();
+      const config = getConfig(env);
+
+      // 检查是否使用了正确的统一配置
+      if (tenant_url === 'https://augment.amexiaowu.workers.dev' && token === config.UNIFIED_TOKEN) {
+        // 检查是否有可用的后端 token
+        const availableToken = await getAvailableToken(env);
+        if (!availableToken) {
+          return jsonResponse({
+            success: false,
+            error: 'No available backend tokens configured'
+          }, 400);
+        }
+
+        return jsonResponse({
+          success: true,
+          user: {
+            id: 'proxy-user',
+            email: 'proxy@augment2api.com',
+            name: 'Augment2API Proxy User',
+            tenant_url: 'https://augment.amexiaowu.workers.dev',
+            token: config.UNIFIED_TOKEN
+          },
+          tenant: {
+            id: 'proxy-tenant',
+            name: 'Augment2API Proxy',
+            url: 'https://augment.amexiaowu.workers.dev'
+          }
+        });
+      } else {
+        return jsonResponse({
+          success: false,
+          error: 'Invalid tenant_url or token'
+        }, 401);
+      }
+    } catch (error) {
+      return jsonResponse({
+        success: false,
+        error: 'Invalid request format'
+      }, 400);
+    }
+  }
+
+  // GET 请求返回登录信息
+  return jsonResponse({
+    message: 'VSCode Plugin Login Endpoint',
+    instructions: {
+      tenant_url: 'https://augment.amexiaowu.workers.dev',
+      token: 'your-unified-token-here'
+    }
+  });
+}
+
+// VSCode 插件认证检查接口
+async function handleVSCodeAuth(request, env) {
+  const authHeader = request.headers.get('Authorization');
+  const config = getConfig(env);
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return jsonResponse({
+      authenticated: false,
+      error: 'No authorization header'
+    }, 401);
+  }
+
+  const token = authHeader.slice(7);
+  if (token !== config.UNIFIED_TOKEN) {
+    return jsonResponse({
+      authenticated: false,
+      error: 'Invalid token'
+    }, 401);
+  }
+
+  // 检查后端 token 可用性
+  try {
+    const availableToken = await getAvailableToken(env);
+    return jsonResponse({
+      authenticated: true,
+      user: {
+        id: 'proxy-user',
+        email: 'proxy@augment2api.com',
+        name: 'Augment2API Proxy User'
+      },
+      tenant: {
+        id: 'proxy-tenant',
+        name: 'Augment2API Proxy',
+        url: 'https://augment.amexiaowu.workers.dev'
+      },
+      backend_tokens_available: !!availableToken
+    });
+  } catch (error) {
+    return jsonResponse({
+      authenticated: true,
+      user: {
+        id: 'proxy-user',
+        email: 'proxy@augment2api.com',
+        name: 'Augment2API Proxy User'
+      },
+      tenant: {
+        id: 'proxy-tenant',
+        name: 'Augment2API Proxy',
+        url: 'https://augment.amexiaowu.workers.dev'
+      },
+      backend_tokens_available: false,
+      warning: 'No backend tokens configured'
+    });
   }
 }
 
