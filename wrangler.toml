@@ -11,8 +11,8 @@ ACCESS_PWD = "admin-password-123"
 # D1 数据库绑定
 [[d1_databases]]
 binding = "DB"
-database_name = "augment2api-db"
-database_id = "your-database-id"
+database_name = "augment"
+database_id = "7e2841ef-9e67-4ce6-bb2f-3af21664c77f"
 
 # 生产环境配置
 [env.production]
@@ -24,8 +24,8 @@ ACCESS_PWD = "your-production-admin-password"
 
 [[env.production.d1_databases]]
 binding = "DB"
-database_name = "augment2api-db-prod"
-database_id = "your-production-database-id"
+database_name = "augment"
+database_id = "7e2841ef-9e67-4ce6-bb2f-3af21664c77f"
 
 # 测试环境配置
 [env.staging]
@@ -37,5 +37,5 @@ ACCESS_PWD = "your-staging-admin-password"
 
 [[env.staging.d1_databases]]
 binding = "DB"
-database_name = "augment2api-db-staging"
-database_id = "your-staging-database-id"
+database_name = "augment"
+database_id = "7e2841ef-9e67-4ce6-bb2f-3af21664c77f"
