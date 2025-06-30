@@ -52,6 +52,14 @@ export default {
         return handleTokenValidation(request, env);
       } else if (path === '/api/usage' || path === '/usage') {
         return handleUsageInfo(request, env);
+      } else if (path === '/api/me' || path === '/me') {
+        return handleUserInfo(request, env);
+      } else if (path === '/api/account' || path === '/account') {
+        return handleUserInfo(request, env);
+      } else if (path === '/api/tenant' || path === '/tenant') {
+        return handleTenantInfo(request, env);
+      } else if (path === '/api/health' || path === '/health') {
+        return handleHealthCheck(request, env);
       } else if (path.startsWith('/api/')) {
         return handleAPI(request, env);
       } else {
@@ -437,6 +445,105 @@ async function handleUsageInfo(request, env) {
       expires_at: null
     }
   });
+}
+
+// VSCode 插件租户信息接口
+async function handleTenantInfo(request, env) {
+  // 验证统一token
+  if (!verifyUnifiedToken(request, env)) {
+    return jsonResponse({ error: 'Invalid authorization token' }, 401);
+  }
+
+  return jsonResponse({
+    id: 'proxy-tenant',
+    name: 'Augment2API Proxy',
+    url: 'https://augment.amexiaowu.workers.dev',
+    domain: 'augment.amexiaowu.workers.dev',
+    status: 'active',
+    plan: 'pro',
+    created_at: '2024-01-01T00:00:00Z',
+    settings: {
+      api_enabled: true,
+      chat_enabled: true,
+      models: ['claude-3.7-chat', 'claude-3.7-agent', 'claude-4-agent', 'augment-chat']
+    }
+  });
+}
+
+// 健康检查接口
+async function handleHealthCheck(request, env) {
+  try {
+    // 检查数据库连接
+    const { results } = await env.DB.prepare('SELECT COUNT(*) as count FROM tokens').all();
+
+    return jsonResponse({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      database: 'connected',
+      tokens_count: results[0]?.count || 0
+    });
+  } catch (error) {
+    return jsonResponse({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      version: '1.0.0',
+      database: 'error',
+      error: error.message
+    }, 500);
+  }
+}
+
+// 通用 API 处理函数（用于调试和记录未知请求）
+async function handleAPI(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const method = request.method;
+
+  console.log(`Unknown API request: ${method} ${path}`);
+
+  // 记录请求详情用于调试
+  const requestInfo = {
+    method: method,
+    path: path,
+    headers: Object.fromEntries(request.headers.entries()),
+    query: Object.fromEntries(url.searchParams.entries()),
+    timestamp: new Date().toISOString()
+  };
+
+  console.log('Request details:', JSON.stringify(requestInfo, null, 2));
+
+  // 如果是 OPTIONS 请求，返回 CORS 头
+  if (method === 'OPTIONS') {
+    return new Response(null, {
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      },
+    });
+  }
+
+  // 返回 404 但包含调试信息
+  return jsonResponse({
+    error: 'API endpoint not found',
+    path: path,
+    method: method,
+    available_endpoints: [
+      '/api/user',
+      '/api/validate',
+      '/api/usage',
+      '/api/me',
+      '/api/account',
+      '/api/tenant',
+      '/api/health',
+      '/v1/models',
+      '/v1/chat/completions'
+    ],
+    debug_info: requestInfo
+  }, 404);
 }
 
 // Augment 认证代理处理
