@@ -1,23 +1,25 @@
 // Cloudflare Workers + D1 完整部署方案
 // 无需外部服务器，完全基于 Cloudflare 平台
 
-// 配置常量
-const CONFIG = {
-  // 统一代理配置
-  UNIFIED_TOKEN: 'your-unified-token-here', // 客户端使用的统一token
-  ACCESS_PWD: 'admin-password-123',          // 管理界面密码
-  
-  // Augment API 配置
-  AUGMENT_AUTH_URL: 'https://auth.augmentcode.com',
-  
-  // 支持的模型列表
-  MODELS: [
-    { id: 'claude-3.7-chat', object: 'model', created: 1708387200, owned_by: 'anthropic' },
-    { id: 'claude-3.7-agent', object: 'model', created: 1708387200, owned_by: 'anthropic' },
-    { id: 'claude-4-agent', object: 'model', created: 1708387200, owned_by: 'anthropic' },
-    { id: 'augment-chat', object: 'model', created: 1708387200, owned_by: 'augment' }
-  ]
-};
+// 获取配置（从环境变量）
+function getConfig(env) {
+  return {
+    // 统一代理配置（从环境变量读取）
+    UNIFIED_TOKEN: env.UNIFIED_TOKEN || 'your-unified-token-here',
+    ACCESS_PWD: env.ACCESS_PWD || 'admin-password-123',
+
+    // Augment API 配置
+    AUGMENT_AUTH_URL: 'https://auth.augmentcode.com',
+
+    // 支持的模型列表
+    MODELS: [
+      { id: 'claude-3.7-chat', object: 'model', created: 1708387200, owned_by: 'anthropic' },
+      { id: 'claude-3.7-agent', object: 'model', created: 1708387200, owned_by: 'anthropic' },
+      { id: 'claude-4-agent', object: 'model', created: 1708387200, owned_by: 'anthropic' },
+      { id: 'augment-chat', object: 'model', created: 1708387200, owned_by: 'augment' }
+    ]
+  };
+}
 
 // 主要处理函数
 export default {
@@ -35,11 +37,11 @@ export default {
       if (path === '/') {
         return handleAdminPage();
       } else if (path === '/api/login') {
-        return handleLogin(request);
+        return handleLogin(request, env);
       } else if (path.startsWith('/api/tokens')) {
         return handleTokenManagement(request, env);
       } else if (path === '/v1/models') {
-        return handleModels(request);
+        return handleModels(request, env);
       } else if (path === '/v1/chat/completions' || path === '/chat-stream') {
         return handleChatCompletion(request, env);
       } else if (path.startsWith('/api/')) {
@@ -168,23 +170,39 @@ function handleAdminPage() {
                 const response = await fetch('/api/tokens', {
                     headers: { 'Authorization': 'Bearer ' + authToken }
                 });
+
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+                }
+
                 const tokens = await response.json();
-                
+                console.log('Loaded tokens:', tokens);
+
                 const tokenList = document.getElementById('tokenList');
+
+                // 确保 tokens 是数组
+                if (!Array.isArray(tokens)) {
+                    console.error('Tokens is not an array:', tokens);
+                    tokenList.innerHTML = '<p>数据格式错误，请检查数据库配置</p>';
+                    return;
+                }
+
                 if (tokens.length === 0) {
-                    tokenList.innerHTML = '<p>暂无 Token</p>';
+                    tokenList.innerHTML = '<p>暂无 Token，请先添加 Augment Token</p>';
                 } else {
-                    tokenList.innerHTML = tokens.map(token => 
-                        '<div class="token-item status-' + token.status + '">' +
-                        '<strong>Token:</strong> ' + token.token.substring(0, 20) + '...<br>' +
-                        '<strong>Tenant URL:</strong> ' + token.tenant_url + '<br>' +
-                        '<strong>状态:</strong> ' + token.status + '<br>' +
-                        '<strong>备注:</strong> ' + (token.remark || '无') +
+                    tokenList.innerHTML = tokens.map(token =>
+                        '<div class="token-item status-' + (token.status || 'unknown') + '">' +
+                        '<strong>Token:</strong> ' + (token.token ? token.token.substring(0, 20) + '...' : '未知') + '<br>' +
+                        '<strong>Tenant URL:</strong> ' + (token.tenant_url || '未设置') + '<br>' +
+                        '<strong>状态:</strong> ' + (token.status || '未知') + '<br>' +
+                        '<strong>备注:</strong> ' + (token.remark || '无') + '<br>' +
+                        '<strong>创建时间:</strong> ' + (token.created_at ? new Date(token.created_at).toLocaleString() : '未知') +
                         '</div>'
                     ).join('');
                 }
             } catch (error) {
-                document.getElementById('tokenList').innerHTML = '<p>加载失败: ' + error.message + '</p>';
+                console.error('Load tokens error:', error);
+                document.getElementById('tokenList').innerHTML = '<p>加载失败: ' + error.message + '<br>请检查数据库是否已正确配置</p>';
             }
         }
         
@@ -232,10 +250,11 @@ function handleAdminPage() {
 }
 
 // 登录处理
-async function handleLogin(request) {
+async function handleLogin(request, env) {
   const { password } = await request.json();
-  
-  if (password === CONFIG.ACCESS_PWD) {
+  const config = getConfig(env);
+
+  if (password === config.ACCESS_PWD) {
     // 生成简单的会话token
     const sessionToken = btoa(Date.now() + ':' + Math.random());
     return jsonResponse({ success: true, token: sessionToken });
@@ -263,13 +282,25 @@ async function handleTokenManagement(request, env) {
 // 获取 Token 列表
 async function getTokens(env) {
   try {
+    // 检查数据库是否存在
+    if (!env.DB) {
+      console.error('Database not available');
+      return jsonResponse([]);
+    }
+
     const { results } = await env.DB.prepare(
       'SELECT token, tenant_url, status, remark, created_at FROM tokens ORDER BY created_at DESC'
     ).all();
-    
-    return jsonResponse(results || []);
+
+    // 确保返回数组格式
+    const tokenList = Array.isArray(results) ? results : [];
+    console.log('Token list retrieved:', tokenList.length, 'tokens');
+
+    return jsonResponse(tokenList);
   } catch (error) {
-    return jsonResponse({ error: 'Database error' }, 500);
+    console.error('Database error in getTokens:', error);
+    // 返回空数组而不是错误，避免前端崩溃
+    return jsonResponse([]);
   }
 }
 
@@ -293,15 +324,16 @@ async function addToken(request, env) {
 }
 
 // 模型列表
-function handleModels(request) {
+function handleModels(request, env) {
   // 验证统一token
-  if (!verifyUnifiedToken(request)) {
+  if (!verifyUnifiedToken(request, env)) {
     return jsonResponse({ error: 'Invalid authorization token' }, 401);
   }
 
+  const config = getConfig(env);
   return jsonResponse({
     object: 'list',
-    data: CONFIG.MODELS
+    data: config.MODELS
   });
 }
 
@@ -478,14 +510,15 @@ function handleStreamResponse(response, model) {
 }
 
 // 验证统一token
-function verifyUnifiedToken(request) {
+function verifyUnifiedToken(request, env) {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return false;
   }
-  
+
+  const config = getConfig(env);
   const token = authHeader.slice(7);
-  return token === CONFIG.UNIFIED_TOKEN;
+  return token === config.UNIFIED_TOKEN;
 }
 
 // JSON 响应辅助函数
