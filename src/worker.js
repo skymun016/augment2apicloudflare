@@ -64,6 +64,8 @@ export default {
         return handleVSCodeLogin(request, env);
       } else if (path === '/api/vscode/auth' || path === '/vscode/auth') {
         return handleVSCodeAuth(request, env);
+      } else if (path === '/api/auth/token' || path === '/auth/token') {
+        return handleTokenAuth(request, env);
       } else if (path.startsWith('/api/')) {
         return handleAPI(request, env);
       } else {
@@ -517,7 +519,7 @@ async function handleVSCodeLogin(request, env) {
 
       // 检查是否使用了正确的统一配置
       if (tenant_url === 'https://augment.amexiaowu.workers.dev' && token === config.UNIFIED_TOKEN) {
-        // 检查是否有可用的后端 token
+        // 获取一个可用的真实后端 token
         const availableToken = await getAvailableToken(env);
         if (!availableToken) {
           return jsonResponse({
@@ -526,19 +528,27 @@ async function handleVSCodeLogin(request, env) {
           }, 400);
         }
 
+        console.log('VSCode login successful, returning real token:', availableToken.tenant_url);
+
+        // 返回真实的 tenant_url 和 token，让 VSCode 插件直接连接真实服务
         return jsonResponse({
           success: true,
           user: {
-            id: 'proxy-user',
-            email: 'proxy@augment2api.com',
-            name: 'Augment2API Proxy User',
-            tenant_url: 'https://augment.amexiaowu.workers.dev',
-            token: config.UNIFIED_TOKEN
+            id: 'augment-user',
+            email: 'user@augmentcode.com',
+            name: 'Augment User',
+            tenant_url: availableToken.tenant_url,
+            token: availableToken.token
           },
           tenant: {
-            id: 'proxy-tenant',
-            name: 'Augment2API Proxy',
-            url: 'https://augment.amexiaowu.workers.dev'
+            id: 'augment-tenant',
+            name: 'Augment',
+            url: availableToken.tenant_url
+          },
+          // 关键：返回真实的连接信息
+          connection: {
+            tenant_url: availableToken.tenant_url,
+            token: availableToken.token
           }
         });
       } else {
@@ -585,40 +595,95 @@ async function handleVSCodeAuth(request, env) {
     }, 401);
   }
 
-  // 检查后端 token 可用性
+  // 检查后端 token 可用性并返回真实连接信息
   try {
     const availableToken = await getAvailableToken(env);
+    if (!availableToken) {
+      return jsonResponse({
+        authenticated: false,
+        error: 'No backend tokens available'
+      }, 503);
+    }
+
     return jsonResponse({
       authenticated: true,
       user: {
-        id: 'proxy-user',
-        email: 'proxy@augment2api.com',
-        name: 'Augment2API Proxy User'
+        id: 'augment-user',
+        email: 'user@augmentcode.com',
+        name: 'Augment User'
       },
       tenant: {
-        id: 'proxy-tenant',
-        name: 'Augment2API Proxy',
-        url: 'https://augment.amexiaowu.workers.dev'
+        id: 'augment-tenant',
+        name: 'Augment',
+        url: availableToken.tenant_url
       },
-      backend_tokens_available: !!availableToken
+      // 关键：返回真实的连接信息
+      connection: {
+        tenant_url: availableToken.tenant_url,
+        token: availableToken.token
+      },
+      backend_tokens_available: true
     });
   } catch (error) {
     return jsonResponse({
-      authenticated: true,
-      user: {
-        id: 'proxy-user',
-        email: 'proxy@augment2api.com',
-        name: 'Augment2API Proxy User'
-      },
-      tenant: {
-        id: 'proxy-tenant',
-        name: 'Augment2API Proxy',
-        url: 'https://augment.amexiaowu.workers.dev'
-      },
-      backend_tokens_available: false,
-      warning: 'No backend tokens configured'
-    });
+      authenticated: false,
+      error: 'Backend token check failed',
+      details: error.message
+    }, 500);
   }
+}
+
+// 标准 Token 认证接口（模拟 Augment 官方认证）
+async function handleTokenAuth(request, env) {
+  if (request.method === 'POST') {
+    try {
+      const { token } = await request.json();
+      const config = getConfig(env);
+
+      // 检查是否是统一 token
+      if (token === config.UNIFIED_TOKEN) {
+        // 获取真实的后端 token
+        const availableToken = await getAvailableToken(env);
+        if (!availableToken) {
+          return jsonResponse({
+            success: false,
+            error: 'No backend tokens available'
+          }, 503);
+        }
+
+        console.log('Token auth successful, redirecting to real service:', availableToken.tenant_url);
+
+        // 返回真实的认证信息，让客户端重新连接到真实服务
+        return jsonResponse({
+          success: true,
+          redirect: true,
+          tenant_url: availableToken.tenant_url,
+          token: availableToken.token,
+          user: {
+            id: 'augment-user',
+            email: 'user@augmentcode.com',
+            name: 'Augment User'
+          }
+        });
+      } else {
+        return jsonResponse({
+          success: false,
+          error: 'Invalid token'
+        }, 401);
+      }
+    } catch (error) {
+      return jsonResponse({
+        success: false,
+        error: 'Invalid request format'
+      }, 400);
+    }
+  }
+
+  return jsonResponse({
+    message: 'Token authentication endpoint',
+    method: 'POST',
+    body: { token: 'your-unified-token-here' }
+  });
 }
 
 // 通用 API 处理函数（用于调试和记录未知请求）
