@@ -26,6 +26,27 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
+    const method = request.method;
+
+    // 详细记录所有请求（用于调试）
+    console.log(`=== REQUEST DEBUG ===`);
+    console.log(`Method: ${method}`);
+    console.log(`Path: ${path}`);
+    console.log(`Full URL: ${request.url}`);
+    console.log(`Headers:`, Object.fromEntries(request.headers.entries()));
+    console.log(`Query params:`, Object.fromEntries(url.searchParams.entries()));
+
+    // 记录请求体（如果有）
+    if (method !== 'GET' && method !== 'HEAD') {
+      try {
+        const clonedRequest = request.clone();
+        const body = await clonedRequest.text();
+        console.log(`Body:`, body);
+      } catch (e) {
+        console.log(`Body: [Unable to read]`);
+      }
+    }
+    console.log(`=== END REQUEST DEBUG ===`);
 
     // CORS 处理
     if (request.method === 'OPTIONS') {
@@ -44,6 +65,8 @@ export default {
         return handleModels(request, env);
       } else if (path === '/v1/chat/completions' || path === '/chat-stream') {
         return handleChatCompletion(request, env);
+      } else if (path === '/find-missing') {
+        return handleFindMissing(request, env);
       } else if (path.startsWith('/auth/') || path.startsWith('/api/auth/')) {
         return handleAugmentAuth(request, env);
       } else if (path === '/api/user' || path === '/user') {
@@ -69,6 +92,9 @@ export default {
       } else if (path.startsWith('/api/')) {
         return handleAPI(request, env);
       } else {
+        // 尝试作为 Augment API 端点处理
+        return handleAugmentAPIProxy(request, env);
+      } else {
         return new Response('Not Found', { status: 404 });
       }
     } catch (error) {
@@ -90,7 +116,7 @@ function handleCORS() {
     headers: {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-request-id, x-request-session-id, x-api-version, User-Agent, Accept, Accept-Charset',
       'Access-Control-Max-Age': '86400',
     },
   });
@@ -686,6 +712,76 @@ async function handleTokenAuth(request, env) {
   });
 }
 
+// 通用 Augment API 代理处理器
+async function handleAugmentAPIProxy(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const method = request.method;
+
+  console.log(`Augment API proxy request: ${method} ${path}`);
+
+  // 验证统一token
+  if (!verifyUnifiedToken(request, env)) {
+    return jsonResponse({ error: 'Invalid authorization token' }, 401);
+  }
+
+  try {
+    // 获取可用的真实token
+    const realToken = await getAvailableToken(env);
+    if (!realToken) {
+      return jsonResponse({ error: 'No available backend tokens' }, 503);
+    }
+
+    // 复制请求头，但使用真实token
+    const headers = new Headers();
+    for (const [key, value] of request.headers.entries()) {
+      if (key.toLowerCase() !== 'authorization' && key.toLowerCase() !== 'host') {
+        headers.set(key, value);
+      }
+    }
+    headers.set('Authorization', `Bearer ${realToken.token}`);
+
+    // 读取请求体（如果有）
+    let body = null;
+    if (method !== 'GET' && method !== 'HEAD') {
+      body = await request.arrayBuffer();
+    }
+
+    // 转发到真实的 Augment API
+    const targetUrl = realToken.tenant_url + path.substring(1); // 移除开头的 /
+    console.log(`Proxying to: ${targetUrl}`);
+
+    const response = await fetch(targetUrl + url.search, {
+      method: method,
+      headers: headers,
+      body: body
+    });
+
+    console.log(`Proxy response status: ${response.status}`);
+
+    // 复制响应头
+    const responseHeaders = new Headers();
+    for (const [key, value] of response.headers.entries()) {
+      responseHeaders.set(key, value);
+    }
+
+    // 添加 CORS 头
+    responseHeaders.set('Access-Control-Allow-Origin', '*');
+    responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-request-id, x-request-session-id, x-api-version');
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders
+    });
+
+  } catch (error) {
+    console.error('Augment API proxy error:', error);
+    return jsonResponse({ error: 'Proxy request failed', message: error.message }, 500);
+  }
+}
+
 // 通用 API 处理函数（用于调试和记录未知请求）
 async function handleAPI(request, env) {
   const url = new URL(request.url);
@@ -712,7 +808,7 @@ async function handleAPI(request, env) {
       headers: {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-request-id, x-request-session-id, x-api-version',
         'Access-Control-Max-Age': '86400',
       },
     });
@@ -732,7 +828,8 @@ async function handleAPI(request, env) {
       '/api/tenant',
       '/api/health',
       '/v1/models',
-      '/v1/chat/completions'
+      '/v1/chat/completions',
+      '/find-missing'
     ],
     debug_info: requestInfo
   }, 404);
@@ -785,6 +882,53 @@ async function handleAugmentAuth(request, env) {
   } catch (error) {
     console.error('Auth proxy error:', error);
     return jsonResponse({ error: 'Auth proxy failed', message: error.message }, 500);
+  }
+}
+
+// 处理 find-missing 请求
+async function handleFindMissing(request, env) {
+  // 验证统一token
+  if (!verifyUnifiedToken(request, env)) {
+    return jsonResponse({ error: 'Invalid authorization token' }, 401);
+  }
+
+  try {
+    // 获取可用的真实token
+    const realToken = await getAvailableToken(env);
+    if (!realToken) {
+      return jsonResponse({ error: 'No available backend tokens' }, 503);
+    }
+
+    // 读取请求体
+    const requestBody = await request.json();
+    console.log('Find-missing request:', JSON.stringify(requestBody, null, 2));
+
+    // 复制请求头，但使用真实token
+    const headers = new Headers();
+    for (const [key, value] of request.headers.entries()) {
+      if (key.toLowerCase() !== 'authorization' && key.toLowerCase() !== 'host') {
+        headers.set(key, value);
+      }
+    }
+    headers.set('Authorization', `Bearer ${realToken.token}`);
+    headers.set('Content-Type', 'application/json');
+
+    // 转发到真实的 Augment API
+    const response = await fetch(realToken.tenant_url + 'find-missing', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(requestBody)
+    });
+
+    console.log('Find-missing response status:', response.status);
+
+    // 返回响应
+    const responseData = await response.json();
+    return jsonResponse(responseData, response.status);
+
+  } catch (error) {
+    console.error('Find-missing error:', error);
+    return jsonResponse({ error: 'Find-missing request failed', message: error.message }, 500);
   }
 }
 
